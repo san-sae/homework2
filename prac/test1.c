@@ -16,9 +16,9 @@ int main ()
 	printf("smalloc(2500):%p\n", p2) ; 
 	smdump() ;
 
-	sfree(p1) ; 
-	printf("sfree(%p)\n", p1) ; 
-	smdump() ;
+	//sfree(p1) ; 
+	//printf("sfree(%p)\n", p1) ; 
+	//smdump() ;
 
 	p3 = smalloc(1000) ; 
 	printf("smalloc(1000):%p\n", p3) ; 

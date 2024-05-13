@@ -1,110 +1,290 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdint.h>
-#include <sys/mman.h>
 #include <stdlib.h>
 #include "smalloc.h" 
 
-// 첫번째 데이터 노드를 가리키는 정적 변수
-// 링크드 리스트의 시작점이며, 데이터 헤더를 따라 이동한다
-smheader_ptr smlist = 0x0 ; 
+smheader_ptr smlist = 0x0 ;
 
-/*
-• smalloc (size_t s)
+#include <unistd.h>
 
-크기가 s 이상인 사용되지 않은 데이터 영역을 선택합니다.
--- 그러한 영역이 없다면, 더 많은 페이지를 추가하기 위해 mmap()을 사용합니다.선택한 데이터 영역의 크기가 s + 24보다 크다면, 두 개로 분할합니다.
--- 선택한 데이터 영역의 크기를 s로 업데이트합니다.
--- 남은 데이터 영역에 대한 새 헤더를 추가합니다.데이터 영역의 첫 번째 주소를 반환합니다.
-*/
-// 요청된 디바이스를 제공하는 데이터 영역의 시작 주소 반환
-// 구현 방법 
-// 1. 링크드 리스트로 사용되지 않은 데이터 영역 찾기
-//    이 영역의 크기는 사용자 프로그램이 요청한 바이트보다 크거나 같아야 함
-//    그러나 링크드 리스트에 이와 같은 데이터 영역이 없다면 이 호출을 취소하고, 페이지 추가해야 함
-// 2. 선택한 데이터 영역의 크기가 s+ 24보다 크다면 이를 둘로 나눔
-// 3. 사용자가 요청한 크기에 맞게 데이터 영역의 첫 번째 주소를 반환
-void *smalloc(size_t s) {
-    // 페이지 내에서 사용 가능한 영역을 찾기 위한 변수
-    smheader_ptr curr = smlist;
+void * smalloc (size_t s) 
+{
+    // 페이지 크기 가져오기
+    size_t page_size = getpagesize();
+
+    // 요청한 크기를 페이지 크기로 정렬
+    size_t aligned_size = ((s + sizeof(smheader) + page_size - 1) / page_size) * page_size - sizeof(smheader);
+
+    // 힙의 시작을 나타내는 포인터
+    smheader_ptr heap_start = NULL;
+
+    if (heap_start == NULL) {
+        // 힙이 초기화되지 않은 경우 첫 번째 메모리 블록 할당
+        heap_start = (smheader_ptr)malloc(aligned_size + sizeof(smheader));
+        heap_start->size = aligned_size;
+        heap_start->used = 1;
+        heap_start->next = NULL;
+        return (void *)(heap_start + 1); // 데이터 영역의 시작 위치 반환
+    }
+
+    // 현재 메모리 블록과 이전 메모리 블록을 저장하는 포인터
+    smheader_ptr current = heap_start;
     smheader_ptr prev = NULL;
 
-    // 페이지 내에서 사용 가능한 영역을 찾는 과정
-    while (curr != NULL) {
-        if (!curr->used) {
-            // 해당 영역을 찾았을 경우
-            if (curr->size >= s + sizeof(smheader)) {
-                // 해당 영역이 필요한 크기보다 크다면 나머지를 새로운 블록으로 분할
-                smheader_ptr new_block = (smheader_ptr)((char *)curr + s + sizeof(smheader));
-                new_block->size = curr->size - s - sizeof(smheader);
+    // 메모리 블록 리스트를 순회해 요청한 크기의 메모리 블록을 찾음
+    while (current != NULL) {
+        if (!current->used && current->size >= aligned_size) {
+            // 사용되지 않은 메모리 블록이 있고 요청한 크기보다 크거나 같은 경우
+            if (current->size >= aligned_size + sizeof(smheader) + sizeof(uint8_t)) {
+                // 현재 메모리 블록 분할
+                smheader_ptr new_block = (smheader_ptr)((char *)current + aligned_size + sizeof(smheader));
+                new_block->size = current->size - aligned_size - sizeof(smheader);
                 new_block->used = 0;
-                new_block->next = curr->next;
-                curr->size = s + sizeof(smheader);
-                curr->next = new_block;
+                new_block->next = current->next;
+                current->next = new_block;
+                current->size = aligned_size;
             }
-            curr->used = 1;
-            return (void *)(curr + 1); // 데이터 영역의 시작 포인터 반환
+            current->used = 1;
+            return (void *)(current + 1); // 데이터 영역의 시작 위치를 반환
         }
-        prev = curr;
-        curr = curr->next;
+        prev = current;
+        current = current->next;
     }
 
-    // 사용 가능한 영역을 찾지 못한 경우 새로운 페이지 할당
-    size_t page_size = s + sizeof(smheader) + 4096; // 필요한 페이지 크기 계산
-    smheader_ptr new_page = (smheader_ptr)mmap(NULL, page_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (new_page == MAP_FAILED) {
-        perror("mmap");
-        exit(EXIT_FAILURE);
-    }
+    // 사용 가능한 메모리 블록이 없는 경우 새로운 메모리 블록을 추가
+    smheader_ptr new_block = (smheader_ptr)malloc(aligned_size + sizeof(smheader));
+    new_block->size = aligned_size;
+    new_block->used = 1;
+    new_block->next = NULL;
+    prev->next = new_block;
 
-    // 새로운 페이지에 대한 링크드 리스트 생성
-    new_page->size = page_size - sizeof(smheader);
-    new_page->used = 1;
-    new_page->next = NULL;
-
-    // 리스트 연결
-    if (prev == NULL) {
-        smlist = new_page;
-    } else {
-        prev->next = new_page;
-    }
-
-    return (void *)(new_page + 1); // 데이터 영역의 시작 포인터 반환
+    return (void *)(new_block + 1); // 데이터 영역의 시작 위치를 반환
 }
 
+void *smalloc_mode(size_t s, smmode m) {
+    smheader_ptr heap_start = NULL;
 
-/*
-• smalloc_mode (size_t s, smmode m)
+    switch (m) {
+        case 0: // first fit
+            // heap_start가 NULL인 경우 첫 번째 메모리 블록을 할당하고 반환
+            if (heap_start == NULL) {
+                heap_start = (smheader_ptr)malloc(s + sizeof(smheader));
+                heap_start->size = s;
+                heap_start->used = 1;
+                heap_start->next = NULL;
+                return (void *)(heap_start + 1);
+            }
 
-지정된 모드 m과 일치하는 사용되지 않은 데이터 영역을 선택합니다.
--- 모드: bestfit, worstfit, firstfit다른 동작은 smalloc (size_t s)와 동일합니다.
-*/
-// smalloc()에서 사용되지 않은 데이터 영역을 선택할 때 여러 후보 중 크기가 s와 같거나 큰 후보가 있다면
-// 어떤 것을 선택해야 하는지(bestfit, worstfit, firstfit)
-// smalloc.h에 관련 type 존재
-// 사용자가 smalloc을 호출할 때 전략 제어 가능
-// 사용자가 지정한 모드에 따라 smalloc 함수가 사용할 데이터 영역 선택
-void * smalloc_mode (size_t s, smmode m){
-	
+            smheader_ptr current = heap_start; // 최초적합 블록을 저장할 포인터 초기화
+            smheader_ptr prev = NULL; // 리스트를 순회할 현재 블록 포인터
+
+            // 리스트를 순회해 처음 발견된 적절한 메모리 블록을 할당하고 반환
+            while (current != NULL) {
+                // 사용되지 않은 블록이면서 요청한 크기보다 크거나 같은 블록을 찾음
+                if (!current->used && current->size >= s) {
+                    // 현재 블록을 요청한 크기로 사용하고, 필요한 경우 분할
+                    if (current->size >= s + sizeof(smheader) + sizeof(uint8_t)) {
+                        smheader_ptr new_block = (smheader_ptr)((char *)current + s + sizeof(smheader));
+                        new_block->size = current->size - s - sizeof(smheader);
+                        new_block->used = 0;
+                        new_block->next = current->next;
+                        current->next = new_block;
+                        current->size = s;
+                    }
+                    current->used = 1; // current가 가리키는 메모리블록을 사용 중으로 표시해 다시 할당되지 않도록 하고 사용 중인 메모리 블록을 추적 가능하게 함
+                    return (void *)(current + 1); // 데이터 영역의 시작 위치 반환
+                }
+                prev = current;
+                current = current->next; // 다음 블록으로 이동
+            }
+
+            // 적합한 블록을 찾지 못한 경우, 새로운 메모리 블록을 리스트에 추가하여 할당
+            smheader_ptr new_block = (smheader_ptr)malloc(s + sizeof(smheader));
+            new_block->size = s;
+            new_block->used = 1;
+            new_block->next = NULL;
+            prev->next = new_block;
+
+            return (void *)(new_block + 1); // 데이터 영역의 시작 위치 반환
+
+        case 1:
+            // best fit
+            {
+                smheader_ptr best_fit = NULL; // 최적적합 블록을 저장할 포인터 초기화
+                smheader_ptr current = heap_start; // 리스트를 순회할 현재 블록 포인터
+
+                // 리스트를 순회해 적합한 블록 찾음
+                while (current != NULL) {
+                    // 사용되지 않고 요청한 크기보다 크거나 같은 블록 찾음
+                    if (!current->used && current->size >= s) {
+                        // 현재 best fit이 없거나 현재 블록이 더 작으면 best fit 갱신
+                        if (best_fit == NULL || current->size < best_fit->size) {
+                            best_fit = current;
+                        }
+                    }
+                    current = current->next; // 다음 노드로 이동
+                }
+
+                // 적절한 블록을 찾으면 사용하고 필요하면 분할해 사용
+                if (best_fit != NULL) {
+                    if (best_fit->size >= s + sizeof(smheader) + sizeof(uint8_t)) {
+                        smheader_ptr new_block = (smheader_ptr)((char *)best_fit + s + sizeof(smheader));
+                        new_block->size = best_fit->size - s - sizeof(smheader);
+                        new_block->used = 0;
+                        new_block->next = best_fit->next;
+                        best_fit->next = new_block;
+                        best_fit->size = s;
+                    }
+                    best_fit->used = 1;
+                    return (void *)(best_fit + 1); // 데이터 영역 시작 위치 반환
+                }
+
+                // 적절한 블록을 찾지 못한 경우 새로운 메모리 블록 할당
+                smheader_ptr new_block = (smheader_ptr)malloc(s + sizeof(smheader));
+                new_block->size = s;
+                new_block->used = 1;
+                new_block->next = NULL;
+                // heap_start가 비어있거나 새로운 블록의 크기가 heap_start보다 작은 경우
+                if (heap_start == NULL || new_block->size < heap_start->size) {
+                    new_block->next = heap_start; // 새로운 블록을 리스트의 맨 앞에 삽입
+                    heap_start = new_block;
+                } else {
+                    // 리스트를 순회하면서 올바른 위치에 블록을 삽입
+                    smheader_ptr prev = NULL;
+                    current = heap_start;
+                    while (current != NULL && current->size <= new_block->size) {
+                        prev = current;
+                        current = current->next;
+                    }
+                    prev->next = new_block;
+                    new_block->next = current;
+                }
+                return (void *)(new_block + 1); // 데이터 영역의 시작 위치 반환
+            }
+
+        case 2:
+            // worst fit
+            {
+                smheader_ptr worst_fit = NULL; // 최악적합 블록을 저장할 포인터 초기화
+                smheader_ptr current = heap_start; // 리스트를 순회할 현재 블록 포인터
+
+                // 리스트를 순회하면서 최악적합 블록을 찾음
+                while (current != NULL) {
+                    // 사용되지 않은 블록이고 요청한 크기보다 크거나 같은 블록을 찾음
+                    if (!current->used && current->size >= s) {
+                        // 최악적합 블록 갱신
+                        if (worst_fit == NULL || current->size > worst_fit->size) {
+                            worst_fit = current;
+                        }
+                    }
+                    current = current->next; // 다음 블록으로 이동
+                }
+
+                // 최악적합 블록을 찾은 경우
+                if (worst_fit != NULL) {
+                    // 최악적합 블록을 요청한 크기로 사용하고 필요한 경우 분할
+                    if (worst_fit->size >= s + sizeof(smheader) + sizeof(uint8_t)) {
+                        smheader_ptr new_block = (smheader_ptr)((char *)worst_fit + s + sizeof(smheader));
+                        new_block->size = worst_fit->size - s - sizeof(smheader);
+                        new_block->used = 0;
+                        new_block->next = worst_fit->next;
+                        worst_fit->next = new_block;
+                        worst_fit->size = s;
+                    }
+                    worst_fit->used = 1;
+                    return (void *)(worst_fit + 1); // 데이터 영역의 시작 위치 반환
+                }
+
+                // 최악적합 블록을 찾지 못한 경우, 새로운 메모리 블록 할당
+                smheader_ptr new_block = (smheader_ptr)malloc(s + sizeof(smheader));
+                new_block->size = s;
+                new_block->used = 1;
+                new_block->next = NULL;
+
+                // 힙이 비어있거나 새로운 블록의 크기가 가장 큰 경우
+                if (heap_start == NULL || new_block->size > heap_start->size) {
+                    new_block->next = heap_start;
+                    heap_start = new_block;
+                } else {
+                    // 블록을 적절한 위치에 삽입하여 힙을 유지
+                    smheader_ptr prev = NULL;
+                    current = heap_start;
+                    while (current != NULL && current->size >= new_block->size) {
+                        prev = current;
+                        current = current->next;
+                    }
+                    prev->next = new_block;
+                    new_block->next = current;
+                }
+
+                return (void *)(new_block + 1); // 데이터 영역의 시작 위치 반환
+            }
+
+        default:
+            // 잘못된 모드인 경우 smalloc 호출
+            return smalloc(s);
+    }
 }
 
 void sfree (void * p) 
 {
 	// TODO 
+    smheader * header = (smheader *)((char *)p - sizeof(smheader)); // 메모리 블록의 헤더를 가져옴
+    header->used = 0; // 사용 여부를 변경하여 해제
 }
 
-void * srealloc (void * p, size_t s) 
-{
-	// TODO
-	return 0x0 ; // erase this 
+void *srealloc(void *ptr, size_t size) {
+    if (ptr == NULL) {
+        // ptr이 NULL이면 malloc과 동일
+        return smalloc(size);
+    }
+
+    // 이전 메모리 블록의 헤더를 가져옴
+    smheader *header = (smheader *)((char *)ptr - sizeof(smheader));
+    
+    // 이전 메모리 블록의 크기를 가져옴
+    size_t old_size = header->size;
+
+    // 새로운 메모리 블록 할당
+    void *new_ptr = smalloc(size);
+    if (new_ptr == NULL) {
+        // 할당 실패 시 NULL 반환
+        return NULL;
+    }
+
+    // 이전 데이터를 새로운 메모리 블록으로 복사
+    size_t i;
+    char *src = (char *)ptr;
+    char *dest = (char *)new_ptr;
+    for (i = 0; i < (size < old_size ? size : old_size); i++) {
+        dest[i] = src[i];
+    }
+
+    // 이전 메모리 블록 해제
+    sfree(ptr);
+
+    return new_ptr;
 }
 
-void smcoalesce ()
-{
-	//TODO
+void smcoalesce() {
+    smheader *curr = smlist;
+    smheader *prev = NULL;
+
+    // 순회하면서 미사용 데이터 영역을 찾아 병합
+    while (curr != NULL && curr->next != NULL) {
+        if (!(curr->used) && !(curr->next->used)) {
+            // 현재 데이터 영역과 다음 데이터 영역이 모두 미사용인 경우 병합
+            curr->size += sizeof(smheader) + curr->next->size;
+            curr->next = curr->next->next;
+        } else {
+            // 다음 데이터 영역으로 이동
+            prev = curr;
+            curr = curr->next;
+        }
+    }
 }
 
-// 데이터 영역에 대한 정보 읽음
 void smdump () 
 {
 	smheader_ptr itr ;
