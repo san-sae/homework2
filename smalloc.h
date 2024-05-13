@@ -9,11 +9,9 @@ typedef struct _smheader 	smheader ;
 typedef struct _smheader *	smheader_ptr ;
 
 // smalloc_mode에 사용됨
-typedef 
-	enum {
-		bestfit, worstfit, firstfit
-	} 
-	smmode ;
+typedef enum {
+	bestfit, worstfit, firstfit
+} smmode ;
 
 void * smalloc (size_t s) ;
 void * smalloc_mode (size_t s, smmode m) ;

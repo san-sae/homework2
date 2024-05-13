@@ -31,9 +31,9 @@ void *smalloc(size_t s) {
 
     // 페이지 내에서 사용 가능한 영역을 찾는 과정
     while (curr != NULL) {
-        if (!curr->used && curr->size >= s + sizeof(smheader)) {
+        if (!curr->used) {
             // 해당 영역을 찾았을 경우
-            if (curr->size >= s + sizeof(smheader) + 4096) {
+            if (curr->size >= s + sizeof(smheader)) {
                 // 해당 영역이 필요한 크기보다 크다면 나머지를 새로운 블록으로 분할
                 smheader_ptr new_block = (smheader_ptr)((char *)curr + s + sizeof(smheader));
                 new_block->size = curr->size - s - sizeof(smheader);
