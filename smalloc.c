@@ -2,69 +2,65 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include "smalloc.h" 
+#include <sys/mman.h>
+#include "smalloc.h"
 
 smheader_ptr smlist = 0x0 ;
-
 #include <unistd.h>
-
-void * smalloc (size_t s) 
-{
+void *smalloc(size_t s) {
+    // 데이터 헤더의 포인터
+    smheader_ptr current = smlist;
+    smheader_ptr prev = NULL;
     // 페이지 크기 가져오기
     size_t page_size = getpagesize();
-
-    // 요청한 크기를 페이지 크기로 정렬
-    size_t aligned_size = ((s + sizeof(smheader) + page_size - 1) / page_size) * page_size - sizeof(smheader);
-
-    // 힙의 시작을 나타내는 포인터
-    smheader_ptr heap_start = NULL;
-
-    if (heap_start == NULL) {
-        // 힙이 초기화되지 않은 경우 첫 번째 메모리 블록 할당
-        heap_start = (smheader_ptr)malloc(aligned_size + sizeof(smheader));
-        heap_start->size = aligned_size;
-        heap_start->used = 1;
-        heap_start->next = NULL;
-        return (void *)(heap_start + 1); // 데이터 영역의 시작 위치 반환
-    }
-
-    // 현재 메모리 블록과 이전 메모리 블록을 저장하는 포인터
-    smheader_ptr current = heap_start;
-    smheader_ptr prev = NULL;
-
-    // 메모리 블록 리스트를 순회해 요청한 크기의 메모리 블록을 찾음
+    // 사용되지 않은 데이터 영역 중에 크기가 s+24 이상인 영역이 있는지 검사
     while (current != NULL) {
-        if (!current->used && current->size >= aligned_size) {
-            // 사용되지 않은 메모리 블록이 있고 요청한 크기보다 크거나 같은 경우
-            if (current->size >= aligned_size + sizeof(smheader) + sizeof(uint8_t)) {
-                // 현재 메모리 블록 분할
-                smheader_ptr new_block = (smheader_ptr)((char *)current + aligned_size + sizeof(smheader));
-                new_block->size = current->size - aligned_size - sizeof(smheader);
-                new_block->used = 0;
-                new_block->next = current->next;
-                current->next = new_block;
-                current->size = aligned_size;
-            }
-            current->used = 1;
-            return (void *)(current + 1); // 데이터 영역의 시작 위치를 반환
+        if (current->used == 0 && current->size >= s + 24) {
+            break;
         }
         prev = current;
         current = current->next;
     }
-
-    // 사용 가능한 메모리 블록이 없는 경우 새로운 메모리 블록을 추가
-    smheader_ptr new_block = (smheader_ptr)malloc(aligned_size + sizeof(smheader));
-    new_block->size = aligned_size;
-    new_block->used = 1;
-    new_block->next = NULL;
-    prev->next = new_block;
-
-    return (void *)(new_block + 1); // 데이터 영역의 시작 위치를 반환
+    // 만약 해당 크기의 빈 공간을 찾지 못한 경우
+    if (current == NULL) {
+        // 페이지 추가
+        void *page = mmap(NULL, page_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (page == MAP_FAILED) {
+            perror("mmap");
+            return NULL;
+        }
+        // 새로운 데이터 헤더 생성
+        smheader_ptr new_header = (smheader_ptr)page;
+        new_header->size = s;
+        new_header->used = 1;
+        new_header->next = NULL;
+        // 연결 리스트에 새로운 데이터 헤더 추가
+        if (prev == NULL) {
+            smlist = new_header;
+        } else {
+            prev->next = new_header;
+        }
+        // 데이터 영역의 첫 번째 주소 반환
+        return (void *)(new_header + 1);
+    }
+    
+    // 데이터 영역 분할
+    if (current->size > s + 24) {
+        // 새로운 데이터 헤더 생성
+        smheader_ptr new_header = (smheader_ptr)((void *)current + s + 24);
+        new_header->size = current->size - s - 24;
+        new_header->used = 0;
+        new_header->next = current->next;
+        // 현재 헤더 업데이트
+        current->size = s;
+        current->used = 1;
+        current->next = new_header;
+    }
+    // 데이터 영역의 첫 번째 주소 반환
+    return (void *)(current + 1);
 }
-
 void *smalloc_mode(size_t s, smmode m) {
     smheader_ptr heap_start = NULL;
-
     switch (m) {
         case 0: // first fit
             // heap_start가 NULL인 경우 첫 번째 메모리 블록을 할당하고 반환
@@ -75,10 +71,8 @@ void *smalloc_mode(size_t s, smmode m) {
                 heap_start->next = NULL;
                 return (void *)(heap_start + 1);
             }
-
             smheader_ptr current = heap_start; // 최초적합 블록을 저장할 포인터 초기화
             smheader_ptr prev = NULL; // 리스트를 순회할 현재 블록 포인터
-
             // 리스트를 순회해 처음 발견된 적절한 메모리 블록을 할당하고 반환
             while (current != NULL) {
                 // 사용되지 않은 블록이면서 요청한 크기보다 크거나 같은 블록을 찾음
@@ -98,22 +92,18 @@ void *smalloc_mode(size_t s, smmode m) {
                 prev = current;
                 current = current->next; // 다음 블록으로 이동
             }
-
             // 적합한 블록을 찾지 못한 경우, 새로운 메모리 블록을 리스트에 추가하여 할당
             smheader_ptr new_block = (smheader_ptr)malloc(s + sizeof(smheader));
             new_block->size = s;
             new_block->used = 1;
             new_block->next = NULL;
             prev->next = new_block;
-
             return (void *)(new_block + 1); // 데이터 영역의 시작 위치 반환
-
         case 1:
             // best fit
             {
                 smheader_ptr best_fit = NULL; // 최적적합 블록을 저장할 포인터 초기화
                 smheader_ptr current = heap_start; // 리스트를 순회할 현재 블록 포인터
-
                 // 리스트를 순회해 적합한 블록 찾음
                 while (current != NULL) {
                     // 사용되지 않고 요청한 크기보다 크거나 같은 블록 찾음
@@ -125,7 +115,6 @@ void *smalloc_mode(size_t s, smmode m) {
                     }
                     current = current->next; // 다음 노드로 이동
                 }
-
                 // 적절한 블록을 찾으면 사용하고 필요하면 분할해 사용
                 if (best_fit != NULL) {
                     if (best_fit->size >= s + sizeof(smheader) + sizeof(uint8_t)) {
@@ -139,7 +128,6 @@ void *smalloc_mode(size_t s, smmode m) {
                     best_fit->used = 1;
                     return (void *)(best_fit + 1); // 데이터 영역 시작 위치 반환
                 }
-
                 // 적절한 블록을 찾지 못한 경우 새로운 메모리 블록 할당
                 smheader_ptr new_block = (smheader_ptr)malloc(s + sizeof(smheader));
                 new_block->size = s;
@@ -162,13 +150,11 @@ void *smalloc_mode(size_t s, smmode m) {
                 }
                 return (void *)(new_block + 1); // 데이터 영역의 시작 위치 반환
             }
-
         case 2:
             // worst fit
             {
                 smheader_ptr worst_fit = NULL; // 최악적합 블록을 저장할 포인터 초기화
                 smheader_ptr current = heap_start; // 리스트를 순회할 현재 블록 포인터
-
                 // 리스트를 순회하면서 최악적합 블록을 찾음
                 while (current != NULL) {
                     // 사용되지 않은 블록이고 요청한 크기보다 크거나 같은 블록을 찾음
@@ -180,7 +166,6 @@ void *smalloc_mode(size_t s, smmode m) {
                     }
                     current = current->next; // 다음 블록으로 이동
                 }
-
                 // 최악적합 블록을 찾은 경우
                 if (worst_fit != NULL) {
                     // 최악적합 블록을 요청한 크기로 사용하고 필요한 경우 분할
@@ -195,13 +180,11 @@ void *smalloc_mode(size_t s, smmode m) {
                     worst_fit->used = 1;
                     return (void *)(worst_fit + 1); // 데이터 영역의 시작 위치 반환
                 }
-
                 // 최악적합 블록을 찾지 못한 경우, 새로운 메모리 블록 할당
                 smheader_ptr new_block = (smheader_ptr)malloc(s + sizeof(smheader));
                 new_block->size = s;
                 new_block->used = 1;
                 new_block->next = NULL;
-
                 // 힙이 비어있거나 새로운 블록의 크기가 가장 큰 경우
                 if (heap_start == NULL || new_block->size > heap_start->size) {
                     new_block->next = heap_start;
@@ -217,42 +200,34 @@ void *smalloc_mode(size_t s, smmode m) {
                     prev->next = new_block;
                     new_block->next = current;
                 }
-
                 return (void *)(new_block + 1); // 데이터 영역의 시작 위치 반환
             }
-
         default:
             // 잘못된 모드인 경우 smalloc 호출
             return smalloc(s);
     }
 }
-
-void sfree (void * p) 
+void sfree (void * p)
 {
-	// TODO 
+   // TODO
     smheader * header = (smheader *)((char *)p - sizeof(smheader)); // 메모리 블록의 헤더를 가져옴
     header->used = 0; // 사용 여부를 변경하여 해제
 }
-
 void *srealloc(void *ptr, size_t size) {
     if (ptr == NULL) {
         // ptr이 NULL이면 malloc과 동일
         return smalloc(size);
     }
-
     // 이전 메모리 블록의 헤더를 가져옴
     smheader *header = (smheader *)((char *)ptr - sizeof(smheader));
-    
     // 이전 메모리 블록의 크기를 가져옴
     size_t old_size = header->size;
-
     // 새로운 메모리 블록 할당
     void *new_ptr = smalloc(size);
     if (new_ptr == NULL) {
         // 할당 실패 시 NULL 반환
         return NULL;
     }
-
     // 이전 데이터를 새로운 메모리 블록으로 복사
     size_t i;
     char *src = (char *)ptr;
@@ -260,17 +235,13 @@ void *srealloc(void *ptr, size_t size) {
     for (i = 0; i < (size < old_size ? size : old_size); i++) {
         dest[i] = src[i];
     }
-
     // 이전 메모리 블록 해제
     sfree(ptr);
-
     return new_ptr;
 }
-
 void smcoalesce() {
     smheader *curr = smlist;
     smheader *prev = NULL;
-
     // 순회하면서 미사용 데이터 영역을 찾아 병합
     while (curr != NULL && curr->next != NULL) {
         if (!(curr->used) && !(curr->next->used)) {
@@ -284,44 +255,37 @@ void smcoalesce() {
         }
     }
 }
-
-void smdump () 
+void smdump ()
 {
-	smheader_ptr itr ;
-
-	printf("==================== used memory slots ====================\n") ;
-	int i = 0 ;
-	for (itr = smlist ; itr != 0x0 ; itr = itr->next) {
-		if (itr->used == 0)
-			continue ;
-
-		printf("%3d:%p:%8d:", i, ((void *) itr) + sizeof(smheader), (int) itr->size) ;
-
-		int j ;
-		char * s = ((char *) itr) + sizeof(smheader) ;
-		for (j = 0 ; j < (itr->size >= 8 ? 8 : itr->size) ; j++)  {
-			printf("%02x ", s[j]) ;
-		}
-		printf("\n") ;
-		i++ ;
-	}
-	printf("\n") ;
-
-	printf("==================== unused memory slots ====================\n") ;
-	i = 0 ;
-	for (itr = smlist ; itr != 0x0 ; itr = itr->next, i++) {
-		if (itr->used == 1)
-			continue ;
-
-		printf("%3d:%p:%8d:", i, ((void *) itr) + sizeof(smheader), (int) itr->size) ;
-
-		int j ;
-		char * s = ((char *) itr) + sizeof(smheader) ;
-		for (j = 0 ; j < (itr->size >= 8 ? 8 : itr->size) ; j++) {
-			printf("%02x ", s[j]) ;
-		}
-		printf("\n") ;
-		i++ ;
-	}
-	printf("\n") ;
+   smheader_ptr itr ;
+   printf("==================== used memory slots ====================\n") ;
+   int i = 0 ;
+   for (itr = smlist ; itr != 0x0 ; itr = itr->next) {
+      if (itr->used == 0)
+         continue ;
+      printf("%3d:%p:%8d:", i, ((void *) itr) + sizeof(smheader), (int) itr->size) ;
+      int j ;
+      char * s = ((char *) itr) + sizeof(smheader) ;
+      for (j = 0 ; j < (itr->size >= 8 ? 8 : itr->size) ; j++)  {
+         printf("%02x ", s[j]) ;
+      }
+      printf("\n") ;
+      i++ ;
+   }
+   printf("\n") ;
+   printf("==================== unused memory slots ====================\n") ;
+   i = 0 ;
+   for (itr = smlist ; itr != 0x0 ; itr = itr->next, i++) {
+      if (itr->used == 1)
+         continue ;
+      printf("%3d:%p:%8d:", i, ((void *) itr) + sizeof(smheader), (int) itr->size) ;
+      int j ;
+      char * s = ((char *) itr) + sizeof(smheader) ;
+      for (j = 0 ; j < (itr->size >= 8 ? 8 : itr->size) ; j++) {
+         printf("%02x ", s[j]) ;
+      }
+      printf("\n") ;
+      i++ ;
+   }
+   printf("\n") ;
 }
