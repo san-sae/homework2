@@ -245,7 +245,6 @@ void *srealloc(void *ptr, size_t size) {
 }
 */
 
-
 void *srealloc(void *ptr, size_t size) {
     if (ptr == NULL) {
         // ptr이 NULL이면 malloc과 동일
@@ -276,7 +275,26 @@ void *srealloc(void *ptr, size_t size) {
 
     // 다음 노드를 침범하는지 확인
     if (header->next != NULL && new_end > (char *)header->next) {
-        // 다음 노드를 침범할 경우 새로운 메모리 블록을 해제하고 실패를 반환
+        // 다음 노드를 침범하는 경우
+        smheader *next_node = header->next;
+        while (next_node != NULL) {
+            // s+24 바이트 이상의 공간을 찾음
+            if ((char *)next_node - (char *)header >= size + sizeof(smheader)) {
+                // 새로운 노드 생성
+                smheader *new_node = (smheader *)((char *)header + old_size + sizeof(smheader));
+                new_node->size = (char *)next_node - (char *)new_node - sizeof(smheader);
+                new_node->used = 0;
+                new_node->next = next_node;
+                header->next = new_node;
+                // 이전 데이터를 새로운 메모리 공간으로 복사
+                memcpy(new_ptr, ptr, old_size);
+                // 이전 메모리 블록 해제
+                sfree(ptr);
+                return new_ptr;
+            }
+            next_node = next_node->next;
+        }
+        // 새로운 노드를 찾지 못한 경우
         sfree(new_ptr);
         return NULL;
     }
