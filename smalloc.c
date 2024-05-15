@@ -214,6 +214,7 @@ void sfree (void * p)
     header->used = 0; // 사용 여부를 변경하여 해제
 }
 
+/*
 void *srealloc(void *ptr, size_t size) {
     if (ptr == NULL) {
         // ptr이 NULL이면 malloc과 동일
@@ -224,12 +225,6 @@ void *srealloc(void *ptr, size_t size) {
     // 이전 메모리 블록의 크기를 가져옴
     size_t old_size = header->size;
     // 새로운 메모리 블록 할당
-
-    //// try
-    if(old_size < size){
-        return ptr
-    }
-
 
     void *new_ptr = smalloc(size);
     if (new_ptr == NULL) {
@@ -247,6 +242,41 @@ void *srealloc(void *ptr, size_t size) {
     sfree(ptr);
     return new_ptr;
 }
+*/
+
+
+void *srealloc(void *ptr, size_t size) {
+    if (ptr == NULL) {
+        // ptr이 NULL이면 malloc과 동일
+        return smalloc(size);
+    }
+    // 이전 메모리 블록의 헤더를 가져옴
+    smheader *header = (smheader *)((char *)ptr - sizeof(smheader));
+    // 이전 메모리 블록의 크기를 가져옴
+    size_t old_size = header->size;
+
+    // 새로운 size가 이전 size보다 작거나 같은 경우에는 기존 메모리 공간을 재사용
+    if (size <= old_size) {
+        header->size = size; // size 값을 변경
+        return ptr;
+    }
+
+    // 새로운 size에 해당하는 메모리 공간을 할당
+    void *new_ptr = smalloc(size);
+    if (new_ptr == NULL) {
+        // 할당 실패 시 NULL 반환
+        return NULL;
+    }
+    
+    // 이전 데이터를 새로운 메모리 공간으로 복사
+    memcpy(new_ptr, ptr, old_size);
+
+    // 이전 메모리 블록 해제
+    sfree(ptr);
+
+    return new_ptr;
+}
+
 
 void smcoalesce() {
     smheader *curr = smlist;
