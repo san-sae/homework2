@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include "smalloc.h"
 
@@ -267,7 +268,19 @@ void *srealloc(void *ptr, size_t size) {
         // 할당 실패 시 NULL 반환
         return NULL;
     }
-    
+
+    // 새로운 메모리 블록의 다음 포인터 계산
+    char *new_end = (char *)new_ptr + size;
+    // 기존 메모리 블록의 다음 포인터 계산
+    char *old_end = (char *)ptr + old_size;
+
+    // 다음 노드를 침범하는지 확인
+    if (header->next != NULL && new_end > (char *)header->next) {
+        // 다음 노드를 침범할 경우 새로운 메모리 블록을 해제하고 실패를 반환
+        sfree(new_ptr);
+        return NULL;
+    }
+
     // 이전 데이터를 새로운 메모리 공간으로 복사
     memcpy(new_ptr, ptr, old_size);
 
@@ -276,6 +289,7 @@ void *srealloc(void *ptr, size_t size) {
 
     return new_ptr;
 }
+
 
 
 void smcoalesce() {
